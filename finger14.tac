@@ -1,0 +1,58 @@
+from twisted.application import service, strports
+from twisted.internet import protocol, reactor, defer
+from twisted.protocols import basic
+
+
+class FingerProtocol(basic.LineReceiver):
+    def lineReceived(self, user):
+        d = self.factory.getUser(user)
+
+        def onError(err):
+            return 'Internal server error.'
+        d.addErrback(onError)
+
+        def writeResponce(message):
+            self.transport.write(message + b'\r\n')
+            self.transport.loseConnection()
+        d.addCallback(writeResponce)
+
+
+class FingerService(service.Service):
+    def __init__(self, filename):
+        self.users = {}
+        self.filename = filename
+
+    def _read(self):
+        with(open(self.filename, 'rb')) as f:
+            for line in f:
+                user, status = line.split(b':', 1)
+                user = user.strip()
+                status = status.strip()
+                self.users[user] = status
+        self.call = reactor.callLater(30, self._read)
+
+    def startService(self):
+        self._read()
+        service.Service.startService(self)
+
+    def stopService(self):
+        service.Service.stopService(self)
+        self.call.cancel()
+
+    def getUser(self, user):
+        return defer.succeed(self.users.get(user, b'No such user.'))
+
+    def getFingerFactory(self):
+        f = protocol.ServerFactory()
+        f.protocol = FingerProtocol
+        f.getUser = self.getUser
+        return f
+
+
+application = service.Application('finger', uid=0, gid=0)
+
+f = FingerService('/etc/passwd')
+finger = strports.service("tcp:79", f.getFingerFactory())
+
+finger.setServiceParent(service.IServiceCollection(application))
+f.setServiceParent(service.IServiceCollection(application))
